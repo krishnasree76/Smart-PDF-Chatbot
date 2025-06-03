@@ -3,48 +3,57 @@ import React, { useState, useEffect, useRef } from 'react';
 // Main App component
 const App = () => {
   // State variables for managing UI and data
-  const [selectedFile, setSelectedFile] = useState(null); // Stores the selected PDF file object
-  const [pdfText, setPdfText] = useState(''); // Stores the extracted text from the PDF
+  const [selectedFiles, setSelectedFiles] = useState([]); // Array of File objects
+  const [allPdfData, setAllPdfData] = useState([]); // Array of { filename: string, text: string } objects
   const [summary, setSummary] = useState(''); // Stores the summarized text from the PDF
   const [loading, setLoading] = useState(false); // Indicates if an operation is in progress
   const [error, setError] = useState(''); // Stores any error messages to display
   const [chatMessages, setChatMessages] = useState([]); // Stores the history of chat messages
   const [currentQuestion, setCurrentQuestion] = useState(''); // Stores the current question typed by the user
   const [isListening, setIsListening] = useState(false); // Indicates if speech recognition is active
+  const [comparisonResult, setComparisonResult] = useState(''); // New state for comparison results
+  const [comparing, setComparing] = useState(false); // New state for comparison loading
 
   // Ref for the chat messages container to enable auto-scrolling
   const chatMessagesRef = useRef(null);
 
-  // Effect hook to scroll to the bottom of the chat messages whenever they update
+  // Scroll to the bottom of the chat messages whenever they update
   useEffect(() => {
     if (chatMessagesRef.current) {
-      chatMessagesRef.current.scrollTop = chatMessagesRef.current.scrollHeight;
+      chatMessagesRef.scrollTop = chatMessagesRef.current.scrollHeight;
     }
   }, [chatMessages]);
 
   // Handler for when a file is selected via the input field
   const handleFileChange = (event) => {
-    setSelectedFile(event.target.files[0]);
-    setPdfText(''); // Clear previous PDF text when a new file is selected
-    setSummary(''); // Clear previous summary
-    setChatMessages([]); // Clear chat history
-    setError(''); // Clear any previous errors
+    const newFiles = Array.from(event.target.files);
+    // Append new files to the existing selectedFiles array
+    setSelectedFiles((prevFiles) => [...prevFiles, ...newFiles]);
+    
+    // Clear previous processed data and chat when new files are selected
+    setAllPdfData([]); 
+    setSummary(''); 
+    setChatMessages([]); 
+    setError(''); 
+    setComparisonResult(''); // Clear comparison result on new file selection
   };
 
-  // Handler for uploading the PDF and extracting its text
-  const handleUploadPDF = async () => {
-    if (!selectedFile) {
-      setError('Please select a PDF file first.');
+  // Handler for uploading the PDF(s) and extracting their text
+  const handleUploadPDFs = async () => {
+    if (selectedFiles.length === 0) {
+      setError('Please select at least one PDF file first.');
       return;
     }
 
     setLoading(true); // Set loading state to true
     setError(''); // Clear previous errors
     const formData = new FormData();
-    formData.append('pdf', selectedFile); // Append the selected file to form data
+    selectedFiles.forEach(file => {
+      formData.append('pdfs', file); // Append each file with the name 'pdfs'
+    });
 
     try {
-      // Send the PDF file to the backend upload endpoint
+      // Send the PDF files to the backend upload endpoint
       const response = await fetch('http://localhost:5000/upload', {
         method: 'POST',
         body: formData,
@@ -53,24 +62,30 @@ const App = () => {
       // Check if the response was successful
       if (!response.ok) {
         const errData = await response.json();
-        throw new Error(errData.error || 'Failed to upload PDF');
+        throw new Error(errData.error || 'Failed to upload PDFs');
       }
 
-      const data = await response.json();
-      setPdfText(data.text); // Store the extracted PDF text
-      // Automatically summarize the PDF text after successful upload and extraction
-      await handleSummarize(data.text);
-      // Add an initial bot message to the chat
-      setChatMessages([{ sender: 'bot', text: 'PDF uploaded and processed! How can I help you with this document?' }]);
+      const data = await response.json(); // Expects an array of {filename, text}
+      setAllPdfData(data); // Store the extracted PDF data
+      
+      // Combine all texts for initial summarization and chat context
+      const combinedText = data.map(pdf => pdf.text).join('\n\n---\n\n'); // Separator for clarity
+      
+      await handleSummarize(combinedText); // Summarize combined text
+      
+      const fileNames = data.map(pdf => pdf.filename).join(', ');
+      setChatMessages([{ sender: 'bot', text: `PDF(s) uploaded and processed: ${fileNames}. How can I help you with these documents?` }]);
     } catch (err) {
       console.error('Upload Error:', err);
       setError(err.message); // Display error message to the user
     } finally {
       setLoading(false); // Reset loading state
+      // Clear the selected files from the input after successful upload
+      setSelectedFiles([]); 
     }
   };
 
-  // Handler for summarizing the extracted PDF text
+  // Handler for summarizing the extracted PDF text (now combines all text)
   const handleSummarize = async (textToSummarize) => {
     if (!textToSummarize) {
       setError('No PDF text to summarize.');
@@ -87,7 +102,7 @@ const App = () => {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          question: 'Summarize the following document concisely:', // Specific question for summarization
+          question: 'Summarize the following document(s) concisely:', // Specific question for summarization
           pdfText: textToSummarize,
         }),
       });
@@ -95,7 +110,7 @@ const App = () => {
       // Check if the response was successful
       if (!response.ok) {
         const errData = await response.json();
-        throw new Error(errData.error || 'Failed to summarize PDF');
+        throw new Error(errData.error || 'Failed to summarize PDF(s)');
       }
 
       const data = await response.json();
@@ -108,10 +123,11 @@ const App = () => {
     }
   };
 
-  // Handler for sending a user's question to the chatbot
+  // Handler for sending a user's question to the chatbot (now uses all combined text)
   const handleAskQuestion = async (question) => {
-    if (!question.trim() || !pdfText) {
-      setError('Please type a question and ensure a PDF is uploaded.');
+    // FIX: Changed condition to primarily check allPdfData.length
+    if (allPdfData.length === 0 || !question.trim()) {
+      setError('Please type a question and ensure PDF(s) are uploaded.');
       return;
     }
 
@@ -121,8 +137,11 @@ const App = () => {
     setChatMessages((prevMessages) => [...prevMessages, userMessage]); // Add user's message to chat history
     setCurrentQuestion(''); // Clear the input field
 
+    // Combine all PDF texts to send to the AI for answering
+    const combinedTextForQuestion = allPdfData.map(pdf => pdf.text).join('\n\n---\n\n');
+
     try {
-      // Send the question and PDF text to the backend's /ask endpoint
+      // Send the question and combined PDF text to the backend's /ask endpoint
       const response = await fetch('http://localhost:5000/ask', {
         method: 'POST',
         headers: {
@@ -130,7 +149,7 @@ const App = () => {
         },
         body: JSON.stringify({
           question: question,
-          pdfText: pdfText,
+          pdfText: combinedTextForQuestion,
         }),
       });
 
@@ -210,22 +229,66 @@ const App = () => {
     }
   };
 
+  // NEW: Handler for comparing PDFs
+  const handleComparePDFs = async () => {
+    if (allPdfData.length < 2) {
+      setError('Please upload at least two PDFs to compare.');
+      return;
+    }
+
+    setComparing(true);
+    setError('');
+    setComparisonResult(''); // Clear previous comparison result
+
+    // Combine all PDF texts with clear separators for the AI to understand
+    const comparisonPrompt = `Compare the following documents and highlight key similarities and differences.
+    
+    ${allPdfData.map((pdf, index) => `--- Document ${index + 1}: ${pdf.filename} ---\n${pdf.text}`).join('\n\n')}`;
+
+    try {
+      const response = await fetch('http://localhost:5000/compare', { // NEW ENDPOINT: /compare
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          prompt: comparisonPrompt, // Send the constructed prompt
+        }),
+      });
+
+      if (!response.ok) {
+        const errData = await response.json();
+        throw new Error(errData.error || 'Failed to get comparison from AI');
+      }
+
+      const data = await response.json();
+      setComparisonResult(data.answer); // Store the comparison answer
+    } catch (err) {
+      console.error('Comparison Error:', err);
+      setError(err.message);
+    } finally {
+      setComparing(false);
+    }
+  };
+
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-purple-100 to-indigo-200 flex items-center justify-center p-4 font-sans">
       <div className="bg-white rounded-xl shadow-2xl p-8 w-full max-w-5xl flex flex-col lg:flex-row gap-8">
-        {/* Left Section: Upload and Summary */}
+        {/* Left Section: Upload, Summary, and Comparison */}
         <div className="flex-1 space-y-6">
           <h1 className="text-4xl font-extrabold text-center text-purple-800 mb-6">Smart PDF Chatbot</h1>
 
           {/* File Upload Section */}
           <div className="bg-purple-50 p-6 rounded-lg shadow-inner">
             <label htmlFor="pdf-upload" className="block text-lg font-semibold text-purple-700 mb-3">
-              Choose PDF File
+              Choose PDF File(s)
             </label>
             <input
               id="pdf-upload"
               type="file"
               accept=".pdf"
+              multiple // Allow multiple file selection
               onChange={handleFileChange}
               className="block w-full text-sm text-gray-700
                          file:mr-4 file:py-2 file:px-4
@@ -234,12 +297,19 @@ const App = () => {
                          file:bg-purple-500 file:text-white
                          hover:file:bg-purple-600 cursor-pointer"
             />
-            {selectedFile && (
-              <p className="mt-2 text-sm text-gray-600">Selected: {selectedFile.name}</p>
+            {selectedFiles.length > 0 && (
+              <div className="mt-2 text-sm text-gray-600">
+                <p className="font-semibold mb-1">Selected Files for Upload:</p>
+                <ul className="list-disc list-inside">
+                  {selectedFiles.map((file, index) => (
+                    <li key={index}>{file.name}</li>
+                  ))}
+                </ul>
+              </div>
             )}
             <button
-              onClick={handleUploadPDF}
-              disabled={loading || !selectedFile}
+              onClick={handleUploadPDFs} 
+              disabled={loading || selectedFiles.length === 0}
               className="mt-4 w-full bg-gradient-to-r from-purple-600 to-indigo-600 text-white py-3 px-6 rounded-full
                          font-bold text-lg shadow-lg hover:shadow-xl transform hover:scale-105 transition-all duration-300
                          disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center"
@@ -249,15 +319,40 @@ const App = () => {
                   <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
                   <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
                 </svg>
-              ) : 'Upload PDF'}
+              ) : 'Upload PDF(s) and Process'}
             </button>
           </div>
 
-          {/* Summary Display Section (remains as it provides context) */}
+          {/* Summary Display Section */}
           {summary && (
             <div className="bg-green-50 p-6 rounded-lg shadow-inner">
-              <h2 className="text-xl font-bold text-green-800 mb-3">Summary:</h2>
+              <h2 className="text-xl font-bold text-green-800 mb-3">Summary of documents:</h2>
               <p className="text-gray-700 leading-relaxed">{summary}</p>
+            </div>
+          )}
+
+          {/* New: Compare PDFs Button */}
+          <div className="bg-orange-50 p-6 rounded-lg shadow-inner">
+            <h2 className="text-xl font-bold text-orange-800 mb-3">Document Comparison</h2>
+            <button
+              onClick={handleComparePDFs}
+              disabled={comparing || allPdfData.length < 2} // Enable only if at least 2 PDFs are processed
+              className="w-full py-3 bg-gradient-to-r from-orange-500 to-amber-500 text-white font-semibold rounded-full shadow-md hover:scale-105 transition transform duration-200 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center"
+            >
+              {comparing ? (
+                <svg className="animate-spin h-5 w-5 mr-3 text-white" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                </svg>
+              ) : 'Compare Uploaded PDFs'}
+            </button>
+          </div>
+
+          {/* New: Comparison Result Display Section */}
+          {comparisonResult && (
+            <div className="bg-yellow-50 p-6 rounded-lg shadow-inner">
+              <h2 className="text-xl font-bold text-yellow-800 mb-3">Comparison Result:</h2>
+              <p className="text-gray-700 leading-relaxed whitespace-pre-wrap">{comparisonResult}</p>
             </div>
           )}
 
@@ -272,12 +367,12 @@ const App = () => {
 
         {/* Right Section: Chatbot Interface */}
         <div className="flex-1 flex flex-col space-y-4 bg-blue-50 p-6 rounded-xl shadow-inner">
-          <h2 className="text-3xl font-bold text-center text-blue-800 mb-4">Chat with PDF</h2>
+          <h2 className="text-3xl font-bold text-center text-blue-800 mb-4">Chat with PDF(s)</h2>
 
           {/* Chat Messages Display Area */}
           <div ref={chatMessagesRef} className="flex-1 bg-white p-4 rounded-lg shadow-md overflow-y-auto h-96 custom-scrollbar">
             {chatMessages.length === 0 ? (
-              <p className="text-gray-500 text-center mt-10">Upload a PDF to start chatting!</p>
+              <p className="text-gray-500 text-center mt-10">Upload PDF(s) to start chatting!</p>
             ) : (
               chatMessages.map((msg, index) => (
                 <div
@@ -305,13 +400,13 @@ const App = () => {
                   handleAskQuestion(currentQuestion);
                 }
               }}
-              placeholder={isListening ? 'Listening...' : 'Ask a question about the PDF...'}
+              placeholder={isListening ? 'Listening...' : 'Ask a question about the PDF(s)...'}
               className="flex-1 p-3 border border-gray-300 rounded-full focus:outline-none focus:ring-2 focus:ring-blue-400 text-gray-700"
-              disabled={!pdfText || loading || isListening} // Disable if no PDF, loading, or listening
+              disabled={allPdfData.length === 0 || loading || isListening} // Disable if no PDF, loading, or listening
             />
             <button
               onClick={startListening}
-              disabled={!pdfText || loading} // Disable if no PDF or loading
+              disabled={allPdfData.length === 0 || loading} // Disable if no PDF or loading
               className={`p-3 rounded-full shadow-md transition-all duration-200
                          ${isListening ? 'bg-red-500 text-white animate-pulse' : 'bg-blue-500 text-white hover:bg-blue-600'}
                          disabled:opacity-50 disabled:cursor-not-allowed`}
@@ -331,7 +426,7 @@ const App = () => {
             </button>
             <button
               onClick={() => handleAskQuestion(currentQuestion)}
-              disabled={!pdfText || loading || !currentQuestion.trim()} // Disable if no PDF, loading, or empty question
+              disabled={allPdfData.length === 0 || loading || !currentQuestion.trim()} // Disable if no PDF, loading, or empty question
               className="p-3 bg-indigo-500 text-white rounded-full shadow-md hover:bg-indigo-600 transition-colors duration-200
                          disabled:opacity-50 disabled:cursor-not-allowed"
               title="Send Question"
