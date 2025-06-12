@@ -11,13 +11,13 @@ const App = () => {
   const [chatMessages, setChatMessages] = useState([]); 
   const [currentQuestion, setCurrentQuestion] = useState(''); 
   const [isListening, setIsListening] = useState(false); 
-  const [comparisonResult, setComparisonResult] = useState(''); 
   const [comparing, setComparing] = useState(false); 
-  const [dashboardUrl, setDashboardUrl] = useState(''); 
   const [generatingDashboard, setGeneratingDashboard] = useState(false); 
 
   // Ref for the chat messages container to enable auto-scrolling
   const chatMessagesRef = useRef(null);
+  // Ref for the hidden file input to trigger it programmatically
+  const fileInputRef = useRef(null);
 
   // Determine if any valid PDFs have been processed
   const hasProcessedPdfs = allPdfData.filter(pdf => !pdf.error).length > 0;
@@ -35,15 +35,18 @@ const App = () => {
   // Handler for when a file is selected via the input field
   const handleFileChange = (event) => {
     const newFiles = Array.from(event.target.files);
+    // Append new files to existing selected files if any
     setSelectedFiles((prevFiles) => [...prevFiles, ...newFiles]);
     
     // Clear previous processed data and chat when new files are selected
+    // Note: If you want to *add* PDFs to existing processed data, this logic would change.
+    // For now, selecting new files clears everything and starts fresh as per previous implementation.
     setAllPdfData([]); 
     setSummary(''); 
     setChatMessages([]); 
     setError(''); 
-    setComparisonResult(''); 
-    setDashboardUrl(''); 
+    // Clear the input's value to allow selecting the same file again if needed
+    event.target.value = null; 
   };
 
   // Handler for uploading the PDF(s) and extracting their text
@@ -80,7 +83,7 @@ const App = () => {
 
       if (failedPdfs.length > 0) {
           const failedNames = failedPdfs.map(pdf => pdf.filename).join(', ');
-          const errorMessage = `Failed to process: ${failedNames}. Some PDFs might be corrupted, encrypted, or malformed.`;
+          const errorMessage = `Failed to process: ${failedNames}. Some PDFs might be corrupted, encrypted, or malformed.`; 
           setError(errorMessage);
           if (successfulPdfs.length === 0) {
               setLoading(false);
@@ -95,13 +98,13 @@ const App = () => {
       await handleSummarize(combinedText); 
       
       const fileNames = successfulPdfs.map(pdf => pdf.filename).join(', ');
-      setChatMessages([{ sender: 'bot', text: `PDF(s) uploaded and processed: ${fileNames}. How can I help you with these documents?` }]);
+      setChatMessages([{ sender: 'bot', text: `PDF(s) uploaded and processed: ${fileNames}. How can I help you with these documents?` }]); 
     } catch (err) {
       console.error('Upload Error:', err);
       setError(err.message); 
     } finally {
       setLoading(false); 
-      setSelectedFiles([]); 
+      setSelectedFiles([]); // Clear selected files after upload attempt
     }
   };
 
@@ -181,7 +184,7 @@ const App = () => {
     } catch (err) {
       console.error('Ask Question Error:', err);
       setError(err.message); 
-      setChatMessages((prevMessages) => [...prevMessages, { sender: 'bot', text: `Error: ${err.message}` }]);
+      setChatMessages((prevMessages) => [...prevMessages, { sender: 'bot', text: `Error: ${err.message}` }]); 
     } finally {
       setLoading(false); 
     }
@@ -235,24 +238,24 @@ const App = () => {
     }
   };
 
-  // Handler for comparing PDFs
+  // Modified Handler for comparing PDFs - now opens in a new page
   const handleComparePDFs = async () => {
     const successfullyProcessedPdfs = allPdfData.filter(pdf => !pdf.error);
-    if (successfullyProcessedPdfs.length < 2) {
+    if (successfullyProcessedPdfs.length < 2) { 
       setError('Please upload at least two valid PDFs to compare.');
       return;
     }
 
     setComparing(true);
     setError('');
-    setComparisonResult(''); 
 
     const comparisonPrompt = `Compare the following documents and highlight key similarities and differences.
     
     ${successfullyProcessedPdfs.map((pdf, index) => `--- Document ${index + 1}: ${pdf.filename} ---\n${pdf.text}`).join('\n\n')}`;
 
     try {
-      const response = await fetch('http://localhost:5000/compare', { 
+      // Call the new /compare-html endpoint on the backend
+      const response = await fetch('http://localhost:5000/compare-html', { 
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -264,11 +267,12 @@ const App = () => {
 
       if (!response.ok) {
         const errData = await response.json();
-        throw new Error(errData.error || 'Failed to get comparison from AI');
+        throw new Error(errData.error || 'Failed to generate comparison HTML');
       }
 
       const data = await response.json();
-      setComparisonResult(data.answer); 
+      // Open the generated comparison HTML in a new tab
+      window.open(`http://localhost:5000${data.comparisonUrl}`, '_blank'); 
     } catch (err) {
       console.error('Comparison Error:', err);
       setError(err.message);
@@ -277,7 +281,7 @@ const App = () => {
     }
   };
 
-  // handleGenerateDashboard function
+  // Modified handleGenerateDashboard function - now opens in a new page
   const handleGenerateDashboard = async () => {
     const firstSuccessfulPdf = allPdfData.find(pdf => !pdf.error && pdf.savedname); 
     if (!firstSuccessfulPdf) {
@@ -287,7 +291,6 @@ const App = () => {
 
     setGeneratingDashboard(true);
     setError('');
-    setDashboardUrl(''); 
 
     try {
       const response = await fetch('http://localhost:5000/dashboard', { 
@@ -306,7 +309,8 @@ const App = () => {
       }
 
       const data = await response.json(); 
-      setDashboardUrl(`http://localhost:5000${data.dashboardUrl}`); 
+      // Open the generated dashboard HTML in a new tab
+      window.open(`http://localhost:5000${data.dashboardUrl}`, '_blank'); 
       
     } catch (err) { 
       console.error('Dashboard Generation Error:', err);
@@ -316,6 +320,10 @@ const App = () => {
     }
   };
 
+  // Function to trigger the hidden file input
+  const triggerFileInput = () => {
+    fileInputRef.current.click();
+  };
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-purple-100 to-indigo-200 flex flex-col items-center p-4 font-sans">
@@ -328,24 +336,30 @@ const App = () => {
         {/* Left Section: Upload and Dynamic Features */}
         <div className="flex-1 space-y-6">
           {/* File Upload Section (Always visible) */}
-          <div className="bg-purple-50 p-6 rounded-lg shadow-inner">
+          <div className="bg-purple-50 p-6 rounded-lg shadow-inner relative"> {/* Added relative positioning */}
             <label htmlFor="pdf-upload" className="block text-lg font-semibold text-purple-700 mb-3">
               Choose PDF File(s)
             </label>
-            {/* Modified: Reduced width for file input box */}
+            {/* Hidden file input, triggered by buttons */}
             <input
               id="pdf-upload"
               type="file"
               accept=".pdf"
               multiple 
               onChange={handleFileChange}
-              className="block w-2/3 mx-auto text-sm text-gray-700
-                         file:mr-4 file:py-2 file:px-4
-                         file:rounded-full file:border-0
-                         file:text-sm file:font-semibold
-                         file:bg-purple-500 file:text-white
-                         hover:file:bg-purple-600 cursor-pointer"
+              ref={fileInputRef} // Attach ref to the input
+              className="hidden" // Hide the default input
             />
+            
+            {/* Custom styled file input button */}
+            <button
+              onClick={triggerFileInput}
+              disabled={loading}
+              className="mb-4 w-2/3 mx-auto flex items-center justify-center py-2 px-4 rounded-full border border-purple-500 text-sm font-semibold bg-purple-50 text-purple-700 hover:bg-purple-100 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              Select Files
+            </button>
+
             {selectedFiles.length > 0 && (
               <div className="mt-2 text-sm text-gray-600">
                 <p className="font-semibold mb-1">Selected Files for Upload:</p>
@@ -370,6 +384,22 @@ const App = () => {
                   <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
                 </svg>
               ) : 'Upload PDF(s) and Process'}
+            </button>
+
+            {/* PLUS SYMBOL / ADD MORE PDFs button - Now always visible */}
+            <button
+              onClick={triggerFileInput} // Triggers the hidden file input
+              // Disabled if loading (uploading)
+              disabled={loading}
+              className="absolute top-0 right-0 transform translate-x-1/2 -translate-y-1/2 
+                         bg-blue-500 text-white rounded-full p-2 shadow-lg 
+                         hover:bg-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-400 
+                         transition-all duration-200 flex items-center justify-center z-20"
+              title="Add more PDFs"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
+              </svg>
             </button>
           </div>
 
@@ -401,20 +431,11 @@ const App = () => {
                 </button>
               </div>
 
-              {/* Comparison Result Display Section */}
-              {comparisonResult && (
-                <div className="bg-yellow-50 p-6 rounded-lg shadow-inner">
-                  <h2 className="text-xl font-bold text-yellow-800 mb-3">Comparison Result:</h2>
-                  <p className="text-gray-700 leading-relaxed whitespace-pre-wrap">{comparisonResult}</p>
-                </div>
-              )}
-
               {/* Generate Dashboard Button */}
               <div className="bg-blue-50 p-6 rounded-lg shadow-inner">
                 <h2 className="text-xl font-bold text-blue-800 mb-3">Interactive Dashboard</h2>
                 <button
                   onClick={handleGenerateDashboard}
-                  // Enable if at least one successfully processed PDF that has a savedname
                   disabled={generatingDashboard || allPdfData.filter(pdf => !pdf.error && pdf.savedname).length === 0} 
                   className="w-full py-3 bg-gradient-to-r from-green-500 to-teal-500 text-white font-semibold rounded-full shadow-md hover:scale-105 transition transform duration-200 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center"
                 >
@@ -426,19 +447,6 @@ const App = () => {
                   ) : 'Generate Dashboard'}
                 </button>
               </div>
-
-              {/* Dashboard Display Section */}
-              {dashboardUrl && (
-                <div className="bg-white p-6 rounded-lg shadow-inner h-96"> 
-                  <h2 className="text-xl font-bold text-blue-800 mb-3">Generated Dashboard:</h2>
-                  <iframe
-                    src={dashboardUrl}
-                    title="Interactive Dashboard"
-                    className="w-full h-full border rounded-lg shadow-md"
-                    sandbox="allow-scripts allow-same-origin" 
-                  ></iframe>
-                </div>
-              )}
             </>
           )} {/* End Conditional Sections */}
 
@@ -499,15 +507,9 @@ const App = () => {
                            disabled:opacity-50 disabled:cursor-not-allowed`}
                 title="Voice Input"
               >
-                {isListening ? (
-                  <svg className="h-6 w-6" fill="currentColor" viewBox="0 0 20 20">
-                    <path fillRule="evenodd" d="M7 4a3 3 0 016 0v4a3 3 0 11-6 0V4zm4 10.93A7.001 7.001 0 0017 8a1 1 0 10-2 0A5 5 0 015 8a1 1 0 00-2 0 7.001 7.001 0 006 6.93V17H6a1 1 0 100 2h8a1 1 0 100-2h-3v-2.07z" clipRule="evenodd" />
-                  </svg>
-                ) : (
-                  <svg className="h-6 w-6" fill="currentColor" viewBox="0 0 20 20">
-                    <path fillRule="evenodd" d="M7 4a3 3 0 016 0v4a3 3 0 11-6 0V4zm4 10.93A7.001 7.001 0 0017 8a1 1 0 10-2 0A5 5 0 015 8a1 1 0 00-2 0 7.001 7.001 0 006 6.93V17H6a1 1 0 100 2h8a1 1 0 100-2h-3v-2.07z" clipRule="evenodd" />
-                  </svg>
-                )}
+                <svg className="h-6 w-6" fill="currentColor" viewBox="0 0 20 20">
+                  <path fillRule="evenodd" d="M7 4a3 3 0 016 0v4a3 3 0 11-6 0V4zm4 10.93A7.001 7.001 0 0017 8a1 1 0 10-2 0A5 5 0 015 8a1 1 0 00-2 0 7.001 7.001 0 006 6.93V17H6a1 1 0 100 2h8a1 1 0 100-2h-3v-2.07z" clipRule="evenodd" />
+                </svg>
               </button>
               <button
                 onClick={() => handleAskQuestion(currentQuestion)}
